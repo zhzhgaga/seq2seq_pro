@@ -1,8 +1,6 @@
 import tensorflow as tf
 from tensorflow.contrib import rnn
 
-from couplet.Config import Config
-
 
 # class ModelSeq2Seq(Config):
 
@@ -17,11 +15,19 @@ def bi_encoder(embed_input, in_seq_len, num_units, layer_size, input_keep_prob):
     fw_encoder_cell = get_layered_cell(bi_layer_size, num_units, input_keep_prob)
     bw_encoder_cell = get_layered_cell(bi_layer_size, num_units, input_keep_prob)
     bi_encoder_output, bi_encoder_state = tf.nn.bidirectional_dynamic_rnn(cell_fw=fw_encoder_cell,
-                                    cell_bw=bw_encoder_cell,
-                                    inputs=embed_input,
-                                    sequence_length=in_seq_len,
-                                    dtype=embed_input.dtype,
-                                    time_major=False)
+                                                                          cell_bw=bw_encoder_cell,
+                                                                          inputs=embed_input,
+                                                                          sequence_length=in_seq_len,
+                                                                          dtype=embed_input.dtype,
+                                                                          time_major=False)
+    encoder_output = tf.concat(bi_encoder_output, -1)
+    encoder_state = []
+    for layer_id in range(layer_size):
+        encoder_state.append(bi_encoder_state[0][layer_id])
+        encoder_state.append(bi_encoder_state[1][layer_id])
+    encoder_state = tuple(encoder_state)
+    return encoder_output, encoder_state
 
 
-bi_encoder(embed_input=[1,2], in_seq_len=200, num_units=4, layer_size=10, input_keep_prob=0.3)
+def attention_decoder_cell(encoder_input, in_sel_len, unm_units, layer_size, input_keep_prob):
+
