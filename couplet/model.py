@@ -89,4 +89,9 @@ def seq2seq_model(in_seq, in_seq_len, target_seq, target_seq_len, vocab_size, nu
     projection_layer = layers_core.Dense(vocab_size, use_bias=False)
 
     with tf.device('/gpu:0'):
+        embedding = tf.get_variable(name='embedding', shape=[vocab_size, num_units])
+        embedding_input = tf.nn.embedding_loopup(embedding, in_seq, name='embedding_input')
+
+
+        encoder = _output, encoder_state = bi_encoder(in_seq_len,num_units,layer_size,input_keep_prob)
 
