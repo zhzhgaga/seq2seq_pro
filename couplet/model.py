@@ -1,5 +1,6 @@
 import tensorflow as tf
 from tensorflow.contrib import rnn
+from tensorflow.python.layers import core as layers_core
 
 
 # class ModelSeq2Seq(Config):
@@ -29,5 +30,63 @@ def bi_encoder(embed_input, in_seq_len, num_units, layer_size, input_keep_prob):
     return encoder_output, encoder_state
 
 
-def attention_decoder_cell(encoder_input, in_sel_len, unm_units, layer_size, input_keep_prob):
+def attention_decoder_cell(encoder_output, in_seq_len, num_units, layer_size, input_keep_prob):
+    attention_mechanim = tf.contrib.seq2seq.BahdanauAttention(num_units, encoder_output, in_seq_len, normalize=True)
+    cell = get_layered_cell(layer_size, num_units, input_keep_prob)
+    cell = tf.contrib.seq2seq.AttentionWrapper(cell, attention_mechanim, attention_layer_size=num_units)
+    return cell
+
+
+def decoder_projection(output, output_size):
+    return tf.layers.dense(output, output_size, activation=True, use_bias=False, name='output_mlp')
+
+
+def train_decoder(encoder_output, encoder_state, in_seq_leq, target_len, target_seq_len, num_units, layer_size,
+                  embedding, output_size, input_keep_pro, projection_layer):
+    decoder_cell = attention_decoder_cell(encoder_output, in_seq_leq, num_units, layer_size, input_keep_pro)
+
+    batch_size = tf.shape(in_seq_leq)[0]
+
+    init_state = decoder_cell.zero_state(batch_size, tf.float32).clone(cell_state=encoder_state)
+
+    train_helper = tf.contrib.seq2seq.TrainingHelper(target_len, target_seq_len, time_major=False)
+
+    decoder = tf.contrib.seq2seq.BasicDecoder(decoder_cell, train_helper, init_state, output_layer=projection_layer)
+
+    outputs, _, _ = tf.contrib.seq2seq.dynamic_decode(decoder, maximum_iterations=100)
+
+    return outputs.rnn_output
+
+
+def infer_decoder(encoder_state, encoder_output, in_seq_leq, num_units, layer_size, input_keep_prob, embedding,
+                  projection_layer):
+    decoder_cell = attention_decoder_cell(encoder_output, in_seq_leq, num_units, layer_size, input_keep_prob)
+    batch_size = tf.shape(in_seq_leq)[0]
+    init_state = decoder_cell.zero_state(batch_size, tf.float32).clone(cell_state=encoder_state)
+    decoder = tf.contrib.seq2seq.BeamSearchDecoder(
+        cell=decoder_cell,
+        embedding=embedding,
+        start_tokens=tf.fill([batch_size], 0),
+        end_token=1,
+        initial_state=init_state,
+        beam_width=10,
+        output_layer=projection_layer,
+        length_penalty_weight=1.0)
+
+    outputs, _, _ = tf.contrib.seq2seq.dynamic_decode(decoder, maximum_iterations=100)
+    return outputs.sample_id
+
+
+def seq2seq_model(in_seq, in_seq_len, target_seq, target_seq_len, vocab_size, num_units, layer_size, dropout):
+    in_shape = tf.shape(in_seq)
+    batch_size = in_shape[0]
+
+    if target_seq is not None:
+        input_keep_prob = 1 - dropout
+    else:
+        input_keep_prob = 1
+
+    projection_layer = layers_core.Dense(vocab_size, use_bias=False)
+
+    with tf.device('/gpu:0'):
 
