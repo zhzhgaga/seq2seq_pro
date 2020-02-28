@@ -1,126 +1,95 @@
+from os import path
+
 import tensorflow as tf
-from tensorflow.contrib import rnn
-from tensorflow.python.layers import core as layers_core
+
+from couplet.Config import Config
+from couplet.DataLoader import SeqReader
+from couplet.Seq2SeqModel import Seq2SeqModel
 
 
-# class ModelSeq2Seq(Config):
+class Model(Config):
+    Seq2Seq = Seq2SeqModel()
 
-def get_layered_cell(layer_size, num_units, input_keep_prob, output_keep_prob=1.0):
-    return rnn.MultiRNNCell([rnn.DropoutWrapper(
-        tf.nn.rnn_cell.LSTMCell(name='basic_lstm_cell', num_units=num_units), input_keep_prob, output_keep_prob) for
-        i in range(layer_size)])
+    def __init__(self, train_input_file, train_target_file,
+                 test_input_file, test_target_file, vocab_file,
+                 num_units, layers, dropout,
+                 batch_size, learning_rate, output_dir,
+                 save_step=100, eval_step=1000,
+                 param_histogram=False, restore_model=False,
+                 init_train=True, init_infer=False):
+        self.num_units = num_units
+        self.layers = layers
+        self.dropout = dropout
+        self.batch_size = batch_size
+        self.learning_rate = learning_rate
+        self.save_step = save_step
+        self.eval_step = eval_step
+        self.param_histogram = param_histogram
+        self.restore_model = restore_model
+        self.init_train = init_train
+        self.init_infer = init_infer
 
+        if init_train:
+            self.train_reader = SeqReader(train_input_file, train_target_file, vocab_file, batch_size)
+            self.train_reader.start()
+            self.train_data = self.train_reader.read()
+            self.eval_reader = SeqReader(test_input_file, test_target_file, vocab_file, batch_size)
+            self.eval_reader.start()
+            self.eval_data = self.eval_reader.read()
 
-def bi_encoder(embed_input, in_seq_len, num_units, layer_size, input_keep_prob):
-    bi_layer_size = int(layer_size / 2)
-    fw_encoder_cell = get_layered_cell(bi_layer_size, num_units, input_keep_prob)
-    bw_encoder_cell = get_layered_cell(bi_layer_size, num_units, input_keep_prob)
-    bi_encoder_output, bi_encoder_state = tf.nn.bidirectional_dynamic_rnn(cell_fw=fw_encoder_cell,
-                                                                          cell_bw=bw_encoder_cell,
-                                                                          inputs=embed_input,
-                                                                          sequence_length=in_seq_len,
-                                                                          dtype=embed_input.dtype,
-                                                                          time_major=False)
-    encoder_output = tf.concat(bi_encoder_output, -1)
-    encoder_state = []
-    for layer_id in range(layer_size):
-        encoder_state.append(bi_encoder_state[0][layer_id])
-        encoder_state.append(bi_encoder_state[1][layer_id])
-    encoder_state = tuple(encoder_state)
-    return encoder_output, encoder_state
+        self.model_file = path.join(Config.output_dir, 'model.ckpl')
+        self.log_writter = tf.summary.FileWriter(Config.output_dir)
 
+        if init_train:
+            self._init_train()
+            self._init_eval()
 
-def attention_decoder_cell(encoder_output, in_seq_len, num_units, layer_size, input_keep_prob):
-    attention_mechanim = tf.contrib.seq2seq.BahdanauAttention(num_units, encoder_output, in_seq_len, normalize=True)
-    cell = get_layered_cell(layer_size, num_units, input_keep_prob)
-    cell = tf.contrib.seq2seq.AttentionWrapper(cell, attention_mechanim, attention_layer_size=num_units)
-    return cell
+    def gpu_session_config(self):
+        tf_config = tf.ConfigProto()
+        tf_config.gpu_options.allow_growth = True
+        return tf_config
 
+    def _init_train(self):
+        self.train_graph = tf.Graph()
+        with self.train_graph.as_default():
+            self.train_in_seq = tf.placeholder(tf.int32, shape=[self.batch_size, None])
+            self.train_in_seq_len = tf.placeholder(tf.int32, shape=[self.batch_size])
+            self.train_target_seq = tf.placeholder(tf.int32, shape=[self.batch_size, None])
+            self.train_target_seq_len = tf.placeholder(tf.int32, shape=[self.batch_size])
 
-def decoder_projection(output, output_size):
-    return tf.layers.dense(output, output_size, activation=True, use_bias=False, name='output_mlp')
+            output = self.Seq2Seq.seq2seq_model(self.train_in_seq, self.train_in_seq_len, self.train_target_seq,
+                                                self.train_target_seq_len, len(self.train_reader.vocab_file),
+                                                self.num_units, self.layers, self.dropout)
 
+            self.train_output = tf.argmax(tf.nn.softmax(output), 2)
 
-def train_decoder(encoder_output, encoder_state, in_seq_leq, target_len, target_seq_len, num_units, layer_size,
-                  embedding, output_size, input_keep_pro, projection_layer):
-    decoder_cell = attention_decoder_cell(encoder_output, in_seq_leq, num_units, layer_size, input_keep_pro)
+            self.loss = self.Seq2Seq.seq_loss(output, self.train_target_seq, self.train_target_seq_len)
 
-    batch_size = tf.shape(in_seq_leq)[0]
+            params = tf.trainable_variables
 
-    init_state = decoder_cell.zero_state(batch_size, tf.float32).clone(cell_state=encoder_state)
+            gradients = tf.gradients(self.loss, params)
 
-    train_helper = tf.contrib.seq2seq.TrainingHelper(target_len, target_seq_len, time_major=False)
+            clipped_gradients, _ = tf.clip_by_global_norm(gradients, 0.5)
 
-    decoder = tf.contrib.seq2seq.BasicDecoder(decoder_cell, train_helper, init_state, output_layer=projection_layer)
+            self.train_op = tf.train.AdamOptimizer(learning_rate=self.learning_rate).apply_gradients(
+                zip(clipped_gradients))
 
-    outputs, _, _ = tf.contrib.seq2seq.dynamic_decode(decoder, maximum_iterations=100)
+            if self.param_histogram:
+                for v in tf.trainable_variables():
+                    tf.summary.histogram('train_' + v.name, v)
 
-    return outputs.rnn_output
+            tf.summary.scalar('loss', self.loss)
 
+            self.train_summary = tf.summary.merge_all()
+            self.train_init = tf.global_variables_initializer()
+            self.train_saver = tf.train.Saver()
+        self.train_session = tf.Session(graph=self.train_graph, config=self.gpu_session_config())
 
-def infer_decoder(encoder_state, encoder_output, in_seq_leq, num_units, layer_size, input_keep_prob, embedding,
-                  projection_layer):
-    decoder_cell = attention_decoder_cell(encoder_output, in_seq_leq, num_units, layer_size, input_keep_prob)
-    batch_size = tf.shape(in_seq_leq)[0]
-    init_state = decoder_cell.zero_state(batch_size, tf.float32).clone(cell_state=encoder_state)
-    decoder = tf.contrib.seq2seq.BeamSearchDecoder(
-        cell=decoder_cell,
-        embedding=embedding,
-        start_tokens=tf.fill([batch_size], 0),
-        end_token=1,
-        initial_state=init_state,
-        beam_width=10,
-        output_layer=projection_layer,
-        length_penalty_weight=1.0)
-
-    outputs, _, _ = tf.contrib.seq2seq.dynamic_decode(decoder, maximum_iterations=100)
-    return outputs.sample_id
-
-
-def seq2seq_model(in_seq, in_seq_len, target_seq, target_seq_len, vocab_size, num_units, layer_size, dropout):
-    in_shape = tf.shape(in_seq)
-    batch_size = in_shape[0]
-
-    if target_seq is not None:
-        input_keep_prob = 1 - dropout
-    else:
-        input_keep_prob = 1
-
-    projection_layer = layers_core.Dense(vocab_size, use_bias=False)
-
-    with tf.device('/gpu:0'):
-        embedding = tf.get_variable(name='embedding', shape=[vocab_size, num_units])
-
-        embedding_input = tf.nn.embedding_lookup(embedding, in_seq, name='embedding_input')
-
-        encoder_output, encoder_state = bi_encoder(embedding_input, in_seq_len, num_units, layer_size, input_keep_prob)
-
-        decoder_cell = attention_decoder_cell(encoder_output, in_seq_len, num_units, layer_size, input_keep_prob)
-
-        batch_size = tf.shape(in_seq_len)[0]
-
-        init_state = decoder_cell.zero_state(batch_size, tf.float32).clone(cell_state=encoder_state)
-
-        if target_seq is not None:
-            embedding_target = tf.nn.embedding_lookup(embedding, target_seq, name='embedding_target')
-            helper = tf.contrib.seq2seq.TrainingHelpe(embedding_target, target_seq_len, time_major=False)
-        else:
-            helper = tf.contrib.seq2seq.GreedyEmbeddingHelper(embedding, tf.fill([batch_size], 0), 1)
-
-        decoder = tf.contrib.seq2seq.BasicDecoder(decoder_cell, helper, init_state, output_layer=projection_layer)
-
-        outputs, _, _ = tf.contrib.seq2seq.dynamic_decode(decoder, maximum_iterations=100)
-
-        if target_seq is not None:
-            return outputs.rnn_output
-        else:
-            return outputs.sample_id
-
-
-def seq_loss(output, target, seq_len):
-    target = target[:, 1:]
-    cost = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=output, labels=target)
-    batch_size = tf.shape(target)[0]
-    loss_mark = tf.sequence_mask(seq_len, tf.shape(output)[1])
-    cost = cost * tf.to_float(loss_mark)
-    return tf.reduce_sum(cost) / tf.to_float(batch_size)
+    def _init_eval(self):
+        self.eval_graph = tf.Graph()
+        with self.eval_graph.as_default():
+            self.eval_in_seq = tf.placeholder(tf.int32, shape=[self.batch_size, None])
+            self.eval_in_seq_len = tf.placeholder(tf.int32, shape=[self.batch_size])
+            self.eval_output = self.Seq2Seq.seq2seq_model(self.eval_in_seq, self.eval_in_seq_len, None, None,
+                                                          len(self.eval_reader.vocabs), self.num_units, self.layers,
+                                                          self.dropout)
