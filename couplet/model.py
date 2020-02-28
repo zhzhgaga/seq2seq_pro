@@ -90,8 +90,37 @@ def seq2seq_model(in_seq, in_seq_len, target_seq, target_seq_len, vocab_size, nu
 
     with tf.device('/gpu:0'):
         embedding = tf.get_variable(name='embedding', shape=[vocab_size, num_units])
-        embedding_input = tf.nn.embedding_loopup(embedding, in_seq, name='embedding_input')
+
+        embedding_input = tf.nn.embedding_lookup(embedding, in_seq, name='embedding_input')
+
+        encoder_output, encoder_state = bi_encoder(embedding_input, in_seq_len, num_units, layer_size, input_keep_prob)
+
+        decoder_cell = attention_decoder_cell(encoder_output, in_seq_len, num_units, layer_size, input_keep_prob)
+
+        batch_size = tf.shape(in_seq_len)[0]
+
+        init_state = decoder_cell.zero_state(batch_size, tf.float32).clone(cell_state=encoder_state)
+
+        if target_seq is not None:
+            embedding_target = tf.nn.embedding_lookup(embedding, target_seq, name='embedding_target')
+            helper = tf.contrib.seq2seq.TrainingHelpe(embedding_target, target_seq_len, time_major=False)
+        else:
+            helper = tf.contrib.seq2seq.GreedyEmbeddingHelper(embedding, tf.fill([batch_size], 0), 1)
+
+        decoder = tf.contrib.seq2seq.BasicDecoder(decoder_cell, helper, init_state, output_layer=projection_layer)
+
+        outputs, _, _ = tf.contrib.seq2seq.dynamic_decode(decoder, maximum_iterations=100)
+
+        if target_seq is not None:
+            return outputs.rnn_output
+        else:
+            return outputs.sample_id
 
 
-        encoder = _output, encoder_state = bi_encoder(in_seq_len,num_units,layer_size,input_keep_prob)
-
+def seq_loss(output, target, seq_len):
+    target = target[:, 1:]
+    cost = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=output, labels=target)
+    batch_size = tf.shape(target)[0]
+    loss_mark = tf.sequence_mask(seq_len, tf.shape(output)[1])
+    cost = cost * tf.to_float(loss_mark)
+    return tf.reduce_sum(cost) / tf.to_float(batch_size)
