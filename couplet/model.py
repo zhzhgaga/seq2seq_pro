@@ -93,3 +93,43 @@ class Model(Config):
             self.eval_output = self.Seq2Seq.seq2seq_model(self.eval_in_seq, self.eval_in_seq_len, None, None,
                                                           len(self.eval_reader.vocabs), self.num_units, self.layers,
                                                           self.dropout)
+            if self.param_histogram:
+                for v in tf.trainable_variables():
+                    tf.summary.histogram('eval_' + v.name, v)
+            self.eval_summary = tf.summary.merge_all()
+            self.eval_saver = tf.train.Saver()
+        self.eval_session = tf.Session(graph=self.eval_graph, config=self.gpu_session_config())
+
+    def train(self, epochs, start=0):
+        if not self.init_train:
+            raise Exception('Train graph is not inited!')
+        with self.train_graph.as_default():
+            if path.isfile(self.model_file + '.meta') and self.restore_model:
+                print("Reloading model file before training.")
+                self.train_saver.restore(self.train_session, self.model_file)
+            else:
+                self.train_session.run(self.train_init)
+            total_loss = 0
+            for step in range(start, epochs):
+                data = next(self.train_data)
+                in_seq = data['in_seq']
+                in_seq_len = data['in_seq_len']
+                target_seq = data['target_seq']
+                target_seq_len = data['target_seq_leq']
+                output, loss, train, summary = self.train_session.run(
+                    [self.train_output, self.loss, self.train_op, self.train_summary],
+                    feed_dict={
+                        self.train_in_seq: in_seq,
+                        self.train_in_seq_len: in_seq_len,
+                        self.train_target_seq: target_seq,
+                        self.train_target_seq_len: target_seq_len}
+                )
+
+                total_loss += loss
+
+                self.log_writter.add_summary(summary, step)
+
+
+
+
+
