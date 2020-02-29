@@ -1,9 +1,11 @@
+import random
 from os import path
 
 import tensorflow as tf
 
 from couplet.Config import Config
-from couplet.DataLoader import SeqReader
+from couplet.DataLoader import SeqReader, decoder_text, encoder_text, load_vocab
+from couplet.Evaluate import compute_bleu
 from couplet.Seq2SeqModel import Seq2SeqModel
 
 
@@ -43,6 +45,12 @@ class Model(Config):
         if init_train:
             self._init_train()
             self._init_eval()
+
+        if init_infer:
+            self.infer_vocab = load_vocab(vocab_file)
+            self.infer_vocab_indices = dict((c, i) for i, c in enumerate(self.infer_vocab))
+            self._init_infer()
+            self.reload_infer_model()
 
     def gpu_session_config(self):
         tf_config = tf.ConfigProto()
@@ -129,7 +137,93 @@ class Model(Config):
 
                 self.log_writter.add_summary(summary, step)
 
+                if step % self.save_step == 0:
+                    self.train_saver.save(self.train_session, self.model_file)
 
+                    print("Saving model. Step: %d, loss: %f" % (step, total_loss / self.save_step))
 
+                    # print sample output
+                    sid = random.randint(0, self.batch_size - 1)
+                    input_text = decoder_text(in_seq[sid], self.eval_reader.vocabs)
+                    output_text = decoder_text(output[sid], self.train_reader.vocabs)
+                    target_text = decoder_text(target_seq[sid], self.train_reader.vocabs).split(' ')[1:]
+                    target_text = ' '.join(target_text)
+                    print('******************************')
+                    print('src: ' + input_text)
+                    print('output: ' + output_text)
+                    print('target: ' + target_text)
 
+                if step % self.eval_step == 0:
+                    bleu_score = self.eval(step)
 
+    def eval(self, train_step):
+        with self.eval_graph.as_default():
+            self.eval_saver.restore(self.eval_session, self.model_file)
+
+            bleu_score = 0
+            target_results = []
+            output_results = []
+            for step in range(0, self.batch_size - 1):
+                data = next(self.eval_data)
+                in_seq = data['in_seq']
+                in_seq_len = data['in_seq_len']
+                target_seq = data['target_seq']
+                target_seq_len = data['target_seq_len']
+
+                outputs = self.eval_session.run(
+                    self.eval_output,
+                    feed_dict={
+                        self.eval_in_seq: in_seq,
+                        self.eval_in_seq_len: in_seq_len}
+                )
+
+                for i in range(len(outputs)):
+                    output = outputs[i]
+                    target = target_seq[i]
+
+                    output_text = decoder_text(output, self.eval_reader.vocabs).split(' ')
+                    target_text = decoder_text(target[1:], self.eval_reader.vocabs).split(' ')
+
+                    prob = int(self.eval_reader.data_size, *self.batch_size / 10)
+                    target_results.append(target_text)
+                    output_results.append(output_text)
+
+                    if random.randint(1, prob) == 1:
+                        print('====================')
+                        input_text = decoder_text(in_seq[i], self.eval_reader.vocabs)
+                        print('src:' + input_text)
+                        print('output: ' + ' '.join(output_text))
+                        print('target: ' + ' '.join(target_text))
+            return compute_bleu(target_results, output_results)[0] * 100
+
+    def reload_infer_model(self):
+        with self.infer_graph.as_default():
+            self.infer_saver.restore(self.infer_session, self.model_file)
+
+    def infer(self, text):
+        if not self.init_infer:
+            raise Exception('Infer graph is not inited!')
+        with self.infer_graph.as_default():
+            in_seq = encoder_text(text.split(' ') + ['</s>', ],
+                                  self.infer_vocab_indices)
+            in_seq_len = len(in_seq)
+            outputs = self.infer_session.run(self.infer_output,
+                                             feed_dict={
+                                                 self.infer_in_seq: [in_seq],
+                                                 self.infer_in_seq_len: [in_seq_len]})
+            output = outputs[0]
+            output_text = decoder_text(output, self.infer_vocab)
+            return output_text
+
+    def _init_infer(self):
+        self.infer_graph = tf.Graph()
+        with self.infer_graph.as_default():
+            self.infer_in_seq = tf.placeholder(tf.int32, shape=[1, None])
+            self.infer_in_seq_len = tf.placeholder(tf.int32, shape=[1])
+            self.infer_output = self.Seq2Seq.seq2seq_model(self.infer_in_seq,
+                                                           self.infer_in_seq_len, None, None,
+                                                           len(self.infer_vocab),
+                                                           self.num_units, self.layers, self.dropout)
+            self.infer_saver = tf.train.Saver()
+        self.infer_session = tf.Session(graph=self.infer_graph,
+                                        config=self.gpu_session_config())
