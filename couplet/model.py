@@ -3,14 +3,15 @@ from os import path
 
 import tensorflow as tf
 
-from couplet.Config import Config
+from couplet.Config import CoupletConfig
 from couplet.DataLoader import SeqReader, decoder_text, encoder_text, load_vocab
 from couplet.Evaluate import compute_bleu
 from couplet.Seq2SeqModel import Seq2SeqModel
 
 
-class Model(Config):
+class SeqModel():
     Seq2Seq = Seq2SeqModel()
+    config = CoupletConfig()
 
     def __init__(self, train_input_file, train_target_file,
                  test_input_file, test_target_file, vocab_file,
@@ -39,8 +40,8 @@ class Model(Config):
             self.eval_reader.start()
             self.eval_data = self.eval_reader.read()
 
-        self.model_file = path.join(Config.output_dir, 'model.ckpl')
-        self.log_writter = tf.summary.FileWriter(Config.output_dir)
+        self.model_file = path.join(self.config.output_dir, 'model.ckpl')
+        self.log_writter = tf.summary.FileWriter(self.config.output_dir)
 
         if init_train:
             self._init_train()
@@ -73,14 +74,14 @@ class Model(Config):
 
             self.loss = self.Seq2Seq.seq_loss(output, self.train_target_seq, self.train_target_seq_len)
 
-            params = tf.trainable_variables
+            params = tf.trainable_variables()
 
             gradients = tf.gradients(self.loss, params)
 
             clipped_gradients, _ = tf.clip_by_global_norm(gradients, 0.5)
 
             self.train_op = tf.train.AdamOptimizer(learning_rate=self.learning_rate).apply_gradients(
-                zip(clipped_gradients))
+                zip(clipped_gradients, params))
 
             if self.param_histogram:
                 for v in tf.trainable_variables():
@@ -155,6 +156,13 @@ class Model(Config):
 
                 if step % self.eval_step == 0:
                     bleu_score = self.eval(step)
+                    print("Evaluate model. Step: %d, score: %f, loss: %f" % (
+                        step, bleu_score, total_loss / self.save_step))
+                    eval_summary = tf.Summary(value=[tf.Summary.Value(
+                        tag='bleu', simple_value=bleu_score)])
+                    self.log_writter.add_summary(eval_summary, step)
+                if step % self.save_step == 0:
+                    total_loss = 0
 
     def eval(self, train_step):
         with self.eval_graph.as_default():

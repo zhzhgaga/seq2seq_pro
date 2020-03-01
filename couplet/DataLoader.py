@@ -1,6 +1,6 @@
+import queue as Queue
 import random
 
-import Queue
 
 
 def padding_seq(seq):
@@ -54,7 +54,7 @@ class SeqReader(object):
 
         self.vocabs = load_vocab(vocab_file)
         self.vocab_indice = dict((c, i) for i, c in enumerate(self.vocabs))
-        self.data_queue = Queue(queue_size)
+        # self.data_queue = Queue(queue_size)
 
         with open(self.input_file, 'rb') as f:
             for i, l in enumerate(f):

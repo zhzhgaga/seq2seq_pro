@@ -2,10 +2,12 @@ import tensorflow as tf
 from tensorflow.contrib import rnn
 from tensorflow.python.layers import core as layers_core
 
-from couplet.Config import Config
+from couplet.Config import CoupletConfig
 
 
-class Seq2SeqModel(Config):
+class Seq2SeqModel():
+    config = CoupletConfig()
+
     def get_layered_cell(self, layer_size, num_units, input_keep_prob, output_keep_prob=1.0):
         return rnn.MultiRNNCell([rnn.DropoutWrapper(
             tf.nn.rnn_cell.LSTMCell(name='basic_lstm_cell', num_units=num_units), input_keep_prob, output_keep_prob) for
@@ -23,7 +25,7 @@ class Seq2SeqModel(Config):
                                                                               time_major=False)
         encoder_output = tf.concat(bi_encoder_output, -1)
         encoder_state = []
-        for layer_id in range(layer_size):
+        for layer_id in range(bi_layer_size):
             encoder_state.append(bi_encoder_state[0][layer_id])
             encoder_state.append(bi_encoder_state[1][layer_id])
         encoder_state = tuple(encoder_state)
@@ -102,7 +104,7 @@ class Seq2SeqModel(Config):
 
             if target_seq is not None:
                 embedding_target = tf.nn.embedding_lookup(embedding, target_seq, name='embedding_target')
-                helper = tf.contrib.seq2seq.TrainingHelpe(embedding_target, target_seq_len, time_major=False)
+                helper = tf.contrib.seq2seq.TrainingHelper(embedding_target, target_seq_len, time_major=False)
             else:
                 helper = tf.contrib.seq2seq.GreedyEmbeddingHelper(embedding, tf.fill([batch_size], 0), 1)
 
