@@ -4,9 +4,9 @@ from os import path
 import tensorflow as tf
 
 from couplet.Config import CoupletConfig
-from couplet.DataLoader import SeqReader, decoder_text, encoder_text, load_vocab
-from couplet.Evaluate import compute_bleu
-from couplet.Seq2SeqModel import Seq2SeqModel
+from couplet.dataLoader import SeqReader, decoder_text, encoder_text, load_vocab
+from couplet.evaluate import compute_bleu
+from couplet.seq2seqModel import Seq2SeqModel
 
 
 class SeqModel():
@@ -56,6 +56,8 @@ class SeqModel():
     def gpu_session_config(self):
         tf_config = tf.ConfigProto()
         tf_config.gpu_options.allow_growth = True
+        tf_config.allow_soft_placement=True
+        tf_config.log_device_placement=True
         return tf_config
 
     def _init_train(self):
@@ -124,7 +126,7 @@ class SeqModel():
                 in_seq = data['in_seq']
                 in_seq_len = data['in_seq_len']
                 target_seq = data['target_seq']
-                target_seq_len = data['target_seq_leq']
+                target_seq_len = data['target_seq_len']
                 output, loss, train, summary = self.train_session.run(
                     [self.train_output, self.loss, self.train_op, self.train_summary],
                     feed_dict={
