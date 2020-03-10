@@ -68,8 +68,9 @@ class SeqModel():
             self.train_target_seq = tf.placeholder(tf.int32, shape=[self.batch_size, None])
             self.train_target_seq_len = tf.placeholder(tf.int32, shape=[self.batch_size])
 
-            output = self.Seq2Seq.seq2seq_model(self.train_in_seq, self.train_in_seq_len, self.train_target_seq,
-                                                self.train_target_seq_len, len(self.train_reader.vocab_file),
+            output = self.Seq2Seq.seq2seq_model(self.train_in_seq, self.train_in_seq_len,
+                                                self.train_target_seq, self.train_target_seq_len,
+                                                len(self.train_reader.vocabs),
                                                 self.num_units, self.layers, self.dropout)
 
             self.train_output = tf.argmax(tf.nn.softmax(output), 2)

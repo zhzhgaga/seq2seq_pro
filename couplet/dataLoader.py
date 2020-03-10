@@ -82,6 +82,7 @@ class SeqReader(object):
                 target_words = target_words[: self.max_len - 1]
             target_words = ['<s>', ] + target_words
 
+            target_words.append(self.end_token)
             in_seq = encoder_text(input_words, self.vocab_indice)
             target_seq = encoder_text(target_words, self.vocab_indice)
 
